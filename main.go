@@ -27,7 +27,7 @@ const ( //go中定义常量的方法  类似final
 	INDEX    = "around" //因为elasticSearch可以给不同的project用 index是用来区分的
 	TYPE     = "post"
 	DISTANCE = "200km"
-	ES_URL   = "http://35.193.51.116:9200/"
+	ES_URL   = "http://35.238.49.246:9200/"
 )
 
 func main() {
