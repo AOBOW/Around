@@ -6,8 +6,8 @@ import (
 	"github.com/pborman/uuid"
 	elastic "gopkg.in/olivere/elastic.v3"
 	"log"
-	"net/http" //test
-	"reflect"  //test
+	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -167,7 +167,7 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func containsFilteredWords(s *string) bool {
-	filteredWords := []string{
+	filteredWords := []string{ //设置敏感词
 		"fuck",
 		"nigger",
 	}
