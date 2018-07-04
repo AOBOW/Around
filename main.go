@@ -9,6 +9,7 @@ import (
 	"net/http" //test
 	"reflect"  //test
 	"strconv"
+	"strings"
 )
 
 type Location struct { //go中变量大写字母开头 相当于public可在函数外调用 小写字母开头相当于private.
@@ -149,7 +150,10 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 		p := item.(Post) //相当于java中的类型转化  p = (Post)item
 		fmt.Printf("Post by %s: %s at lat %v and lon %v\n", p.User, p.Message, p.Location.Lat, p.Location.Lon)
 
-		ps = append(ps, p)
+		if !containsFilteredWords(&p.Message) { //调用containsFilteredWords函数来过滤敏感词
+			ps = append(ps, p)
+		}
+
 	}
 
 	js, err := json.Marshal(ps)
@@ -160,4 +164,17 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Write(js)
+}
+
+func containsFilteredWords(s *string) bool {
+	filteredWords := []string{
+		"fuck",
+		"nigger",
+	}
+	for _, word := range filteredWords {
+		if strings.Contains(*s, word) {
+			return true
+		}
+	}
+	return false
 }
