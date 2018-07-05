@@ -1,10 +1,13 @@
 package main
 
 import (
+	"cloud.google.com/go/storage"
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/pborman/uuid"
 	elastic "gopkg.in/olivere/elastic.v3"
+	"io"
 	"log"
 	"net/http"
 	"reflect"
@@ -22,13 +25,15 @@ type Post struct {
 	User     string   `json:"user"`
 	Message  string   `json:"message"`
 	Location Location `json:"location"`
+	Url      string   `json:"url"`
 }
 
 const ( //go中定义常量的方法  类似final
-	INDEX    = "around" //因为elasticSearch可以给不同的project用 index是用来区分的
-	TYPE     = "post"
-	DISTANCE = "200km"
-	ES_URL   = "http://35.238.49.246:9200/"
+	INDEX       = "around" //因为elasticSearch可以给不同的project用 index是用来区分的
+	TYPE        = "post"
+	DISTANCE    = "200km"
+	ES_URL      = "http://35.193.98.33:9200"
+	BUCKET_NAME = "post-images-209018"
 )
 
 func main() {
@@ -72,20 +77,97 @@ func main() {
 }
 
 func handlerPost(w http.ResponseWriter, r *http.Request) {
-	// Parse from body of request to get a json object.
-	fmt.Println("Received one post request")
-	decoder := json.NewDecoder(r.Body)
-	var p Post
-	if err := decoder.Decode(&p); err != nil { //将从request中收到的String 转化为Post这个数据结构
-		panic(err) //panic就相当于throw
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+
+	// 32 << 20 is the maxMemory param for ParseMultipartForm, equals to 32MB (1MB = 1024 * 1024 bytes = 2^20 bytes)
+	// After call ParseMultipartForm, the file will be saved in the server memory with maxMemory size.
+	// If the file size is larger than maxMemory, the rest of the data will be saved in a system temporary file.
+
+	r.ParseMultipartForm(32 << 20) //ParseMultipartForm为设置请求文本的最大值 <<为位操作 这代表32M 左移10位时1K 20位1M
+
+	//Parse from data 从request中读数据
+
+	fmt.Printf("Received one post request %s\n", r.FormValue("message"))
+	lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
+	lon, _ := strconv.ParseFloat(r.FormValue("lon"), 64)
+
+	p := &Post{ //将读取到的数据拼成我们自己定义的Post类型
+		User:    "1111",
+		Message: r.FormValue("message"),
+		Location: Location{
+			Lat: lat,
+			Lon: lon,
+		},
 	}
-	fmt.Fprintf(w, "Post received: %s\n", p.Message) //Fprintf为将内容写入文件 同时有后面这个f才才能用占位%s 来操作
+
+	//request中有两种类型  message类型和file类型   上面是读取并转换message  下面是读取file
 
 	id := uuid.New() //uuid保证每次都是一个unique的id
+
+	file, _, err := r.FormFile("image") //FormFile有两个返回值加一个err  File FileHeader(这个用_忽略掉)
+	if err != nil {
+		http.Error(w, "Image is not available", http.StatusInternalServerError) //告诉前端出错了
+		fmt.Printf("Image is not available %v\n", err)                          //%v代表任何类型
+		panic(err)
+	}
+	defer file.Close() //在整个function结束后关闭文件
+
+	ctx := context.Background() //存取GCS时需要一个application的credenial  context是用来读credenial的
+
+	_, attrs, err := saveToGCS(ctx, file, BUCKET_NAME, id)
+	if err != nil {
+		http.Error(w, "GCS is not setup", http.StatusInternalServerError)
+		fmt.Printf("GCS is not setup %v\n", err)
+		panic(err)
+	}
+
+	p.Url = attrs.MediaLink
+
 	//save to ES
-	saveToES(&p, id)
+	saveToES(p, id)
 }
 
+func saveToGCS(ctx context.Context, r io.Reader, bucketName, name string) (*storage.ObjectHandle, *storage.ObjectAttrs, error) {
+	//第一个括号内为input parameter 第二个括号内为返回值类型
+	//create a client
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return nil, nil, err //出现error  返回两个nil 一个Error
+	}
+	defer client.Close()
+
+	bucket := client.Bucket(bucketName) //用buckername来创建一个bucket handle 用这个handle来访问bucket
+
+	if _, err := bucket.Attrs(ctx); err != nil { //用传进来的credenial判断bucket是否存在
+		return nil, nil, err
+	}
+
+	//以上为连接到bucket  以下为向bucket中写入数据
+
+	obj := bucket.Object(name) //用bucket hanle创建一个object   name为传进来的uuid
+	wc := obj.NewWriter(ctx)   //用object创建一个writer  用来向bucket中写内容
+
+	// 把要写入的文件copy到上面创建的bucket的object的writer中 则object被写成该文件
+	if _, err := io.Copy(wc, r); err != nil {
+		return nil, nil, err
+	}
+	if err = wc.Close(); err != nil {
+		return nil, nil, err
+	}
+
+	//GCS文件写入之后默认是没有权限读的 所以还要修改权限 使GCS中的内容可读
+	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil { //ACL: access control list
+		return nil, nil, err
+	}
+
+	//获取所创文件的url
+	attrs, err := obj.Attrs(ctx)
+	fmt.Printf("Post is saved to GCS: %s\n", attrs.MediaLink)
+
+	return obj, attrs, err
+}
 func saveToES(p *Post, id string) {
 	//create a client
 	es_client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
