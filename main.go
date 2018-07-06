@@ -1,18 +1,22 @@
 package main
 
 import (
-	"cloud.google.com/go/storage"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/pborman/uuid"
-	elastic "gopkg.in/olivere/elastic.v3"
 	"io"
 	"log"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"cloud.google.com/go/storage"
+	"github.com/auth0/go-jwt-middleware"
+	"github.com/dgrijalva/jwt-go"
+	"github.com/gorilla/mux"
+	"github.com/pborman/uuid"
+	elastic "gopkg.in/olivere/elastic.v3"
 )
 
 type Location struct { //go中变量大写字母开头 相当于public可在函数外调用 小写字母开头相当于private.
@@ -32,14 +36,16 @@ const ( //go中定义常量的方法  类似final
 	INDEX       = "around" //因为elasticSearch可以给不同的project用 index是用来区分的
 	TYPE        = "post"
 	DISTANCE    = "200km"
-	ES_URL      = "http://35.193.98.33:9200"
+	ES_URL      = "http://35.225.213.177:9200"
 	BUCKET_NAME = "post-images-209018"
 )
+
+var mySigningKey = []byte("secret") //用token方式用户验证时server端自己定义的secret
 
 func main() {
 
 	// Create a client
-	client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
+	client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false)) //与ES建立联系
 	if err != nil {
 		panic(err)
 		return
@@ -71,8 +77,26 @@ func main() {
 	}
 
 	fmt.Println("started-service")
-	http.HandleFunc("/post", handlerPost) // 这里"/post"为endpoint  后面为执行endpoint的method 类似servlet
-	http.HandleFunc("/search", handlerSearch)
+
+	r := mux.NewRouter()
+
+	var jwtMiddleware = jwtmiddleware.New(jwtmiddleware.Options{
+		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) { //func第一个括号是input 第二个是return
+			return mySigningKey, nil
+		}, //ValidationKeyGetter是获得secret 写成func可以额外再对secret做操作 这里就先简单返回secret
+		SigningMethod: jwt.SigningMethodHS256, //用sha256的方式进行加密
+	})
+
+	// 这里"/post" "/search"为endpoint  后面为执行endpoint的method 类似servlet
+	//收到请求后先用Router转到jwtMiddleware的Handler 来验证用户提交的signingkey是否和server的secret一样
+	r.Handle("/post", jwtMiddleware.Handler(http.HandlerFunc(handlerPost))).Methods("POST")
+	r.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(handlerSearch))).Methods("Get")
+
+	//login 和 signup时需要用户名密码  还没有token 所以不用jwtMiddleware来验证
+	r.Handle("/login", http.HandlerFunc(loginHandler)).Methods("POST")
+	r.Handle("/signup", http.HandlerFunc(signupHandler)).Methods("POST")
+
+	http.Handle("/", r)                          //传来的url无endpoint
 	log.Fatal(http.ListenAndServe(":8080", nil)) //ListenAndServe为一个监听器  监听8080端口
 }
 
@@ -80,6 +104,11 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+
+	//从token的claim信息中取出用户名
+	user := r.Context().Value("user")
+	claims := user.(*jwt.Token).Claims
+	username := claims.(jwt.MapClaims)["username"]
 
 	// 32 << 20 is the maxMemory param for ParseMultipartForm, equals to 32MB (1MB = 1024 * 1024 bytes = 2^20 bytes)
 	// After call ParseMultipartForm, the file will be saved in the server memory with maxMemory size.
@@ -94,7 +123,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	lon, _ := strconv.ParseFloat(r.FormValue("lon"), 64)
 
 	p := &Post{ //将读取到的数据拼成我们自己定义的Post类型
-		User:    "1111",
+		User:    username.(string),
 		Message: r.FormValue("message"),
 		Location: Location{
 			Lat: lat,
@@ -140,7 +169,7 @@ func saveToGCS(ctx context.Context, r io.Reader, bucketName, name string) (*stor
 
 	bucket := client.Bucket(bucketName) //用buckername来创建一个bucket handle 用这个handle来访问bucket
 
-	if _, err := bucket.Attrs(ctx); err != nil { //用传进来的credenial判断bucket是否存在
+	if _, err := bucket.Attrs(ctx); err != nil { //用传进来的credenial判断bucket是否存在  Attrs是bucket的attributions
 		return nil, nil, err
 	}
 
@@ -159,7 +188,7 @@ func saveToGCS(ctx context.Context, r io.Reader, bucketName, name string) (*stor
 
 	//GCS文件写入之后默认是没有权限读的 所以还要修改权限 使GCS中的内容可读
 	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil { //ACL: access control list
-		return nil, nil, err
+		return nil, nil, err //AllUsers表示所有用户可以访问   RoleReader指readonly的权限
 	}
 
 	//获取所创文件的url
