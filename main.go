@@ -36,7 +36,7 @@ const ( //go中定义常量的方法  类似final
 	INDEX       = "around" //因为elasticSearch可以给不同的project用 index是用来区分的
 	TYPE        = "post"
 	DISTANCE    = "200km"
-	ES_URL      = "http://35.225.213.177:9200"
+	ES_URL      = "http://35.239.237.62:9200/"
 	BUCKET_NAME = "post-images-209018"
 )
 
@@ -78,16 +78,16 @@ func main() {
 
 	fmt.Println("started-service")
 
-	r := mux.NewRouter()
+	r := mux.NewRouter() //这相当于是一个client  为了加handle
 
 	var jwtMiddleware = jwtmiddleware.New(jwtmiddleware.Options{
 		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) { //func第一个括号是input 第二个是return
-			return mySigningKey, nil
+			return mySigningKey, nil //go的interface就相当于java的object
 		}, //ValidationKeyGetter是获得secret 写成func可以额外再对secret做操作 这里就先简单返回secret
 		SigningMethod: jwt.SigningMethodHS256, //用sha256的方式进行加密
 	})
 
-	// 这里"/post" "/search"为endpoint  后面为执行endpoint的method 类似servlet
+	//这里"/post" "/search"为endpoint  后面为执行endpoint的method 类似servlet
 	//收到请求后先用Router转到jwtMiddleware的Handler 来验证用户提交的signingkey是否和server的secret一样
 	r.Handle("/post", jwtMiddleware.Handler(http.HandlerFunc(handlerPost))).Methods("POST")
 	r.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(handlerSearch))).Methods("Get")
@@ -106,9 +106,9 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
 
 	//从token的claim信息中取出用户名
-	user := r.Context().Value("user")
-	claims := user.(*jwt.Token).Claims
-	username := claims.(jwt.MapClaims)["username"]
+	user := r.Context().Value("user")              //jwt的token默认是在context里用user保存的  这是取出token
+	claims := user.(*jwt.Token).Claims             //从token中取出claims信息
+	username := claims.(jwt.MapClaims)["username"] //从claim信息中获得username
 
 	// 32 << 20 is the maxMemory param for ParseMultipartForm, equals to 32MB (1MB = 1024 * 1024 bytes = 2^20 bytes)
 	// After call ParseMultipartForm, the file will be saved in the server memory with maxMemory size.
@@ -139,7 +139,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Image is not available", http.StatusInternalServerError) //告诉前端出错了
 		fmt.Printf("Image is not available %v\n", err)                          //%v代表任何类型
-		panic(err)
+		return
 	}
 	defer file.Close() //在整个function结束后关闭文件
 
@@ -199,7 +199,7 @@ func saveToGCS(ctx context.Context, r io.Reader, bucketName, name string) (*stor
 }
 func saveToES(p *Post, id string) {
 	//create a client
-	es_client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
+	es_client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false)) //sniff是回调函数 我们不需要
 	if err != nil {
 		panic(err)
 	}
