@@ -33,10 +33,11 @@ func checkUser(username, password string) bool {
 	es_client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false)) //user数据也存在elasticSearch
 	if err != nil {
 		fmt.Print("ElasticSearch is not setup %v\n", err)
-		panic(err)
+		return false
 	}
 
 	//search with a term query
+	//之所以规定用户名必须小写是因为termQuery不区分大小写 如果Tom和tom作为了两个user 会被TermQuery认为一样
 	termQuery := elastic.NewTermQuery("username", username) //termQuery中是username
 	queryResult, err := es_client.Search().
 		Index(INDEX).
@@ -45,7 +46,7 @@ func checkUser(username, password string) bool {
 		Do()
 	if err != nil {
 		fmt.Printf("ElasticSearch query failed %v\n", err)
-		panic(err)
+		return false
 	}
 
 	var tyu User
@@ -93,6 +94,7 @@ func addUser(user User) bool {
 		Do()
 	if err != nil {
 		fmt.Printf("ElasticSearch save user failed %v\n", err)
+		return false
 	}
 	return true
 }
@@ -105,6 +107,7 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 	var u User
 	if err := decoder.Decode(&u); err != nil { //成功decode之后放到新建的User变量中
 		panic(err)
+		return
 	}
 
 	//判断用户名密码不为空且符合用户名命名规范 则add user  usernamePattern是上面定义的全局变量
@@ -149,7 +152,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		tokenString, _ := token.SignedString(mySigningKey)
 
 		/* Finally, write the token to the browser window */
-		w.Write([]byte(tokenString))
+		w.Write([]byte(tokenString)) //go中的string为utf8的Unicode string  但网络传输时要转为byte
 	} else {
 		fmt.Println("Invalid password or username.")
 		http.Error(w, "Invalid password or username", http.StatusForbidden)
